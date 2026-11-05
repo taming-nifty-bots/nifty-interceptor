@@ -1,6 +1,7 @@
 import os
 import math
 import time
+import hashlib
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -154,38 +155,63 @@ def execute_order(conn, orders, key, contract, quantity, side, now, simulated):
 
 def live_order(conn, orders, key, contract, quantity, side, now, existing):
     if existing is None:
-        if side == "BUY" and not now <= now_ist() < now.replace(
-                second=0, microsecond=0) + timedelta(minutes=1):
+        deadline = now.replace(second=0, microsecond=0) + timedelta(minutes=1)
+        if side == "BUY" and not now <= now_ist() < deadline:
             raise ValueError("Order submission missed the entry minute")
+        correlation = hashlib.sha256(key.encode("utf-8")).hexdigest()[:30]
+        prepared = dhan.prepare_order(
+            conn, contract["security_id"], side, quantity, "NSE_FNO", "MARGIN",
+            entry_deadline=deadline.replace(tzinfo=ZoneInfo("Asia/Kolkata")).timestamp()
+            if side == "BUY" else None, correlation_id=correlation)
         intent = dict(_id=key, orderStatus="SUBMITTING", transactionType=side,
                       securityId=contract["security_id"], tradingSymbol=contract["symbol"],
-                      quantity=quantity, simulated=False, strategy_version=VERSION)
+                      quantity=quantity, simulated=False, strategy_version=VERSION,
+                      prepared=prepared, correlationId=correlation)
         try:
             orders.insert_one(intent)
         except DuplicateKeyError:
             existing = orders.find_one({"_id": key})
         else:
             # Never resubmit after an ambiguous response or a crash after sending.
-            placed = dhan.place_order(conn, contract["security_id"], side, quantity)
+            placed = dhan.submit_prepared_order(conn, prepared)
             if not placed.get("orderId"):
                 raise ValueError(f"Order response has no ID; reconcile intent {key} with Dhan")
             orders.update_one({"_id": key}, {"$set": placed})
             existing = orders.find_one({"_id": key})
-    if not existing or existing.get("simulated") is not False or not existing.get("orderId"):
+    if not existing or existing.get("simulated") is not False:
         raise ValueError(f"Unconfirmed order submission {key}; reconcile with Dhan before retrying")
+    if not existing.get("orderId"):
+        if not existing.get("correlationId"):
+            raise ValueError(f"Legacy unconfirmed order {key}; reconcile with Dhan")
+        recovered = dhan.order_by_correlation(conn, existing["correlationId"])
+        orders.update_one({"_id": key}, {"$set": recovered})
+        existing = orders.find_one({"_id": key})
+    if "prepared" not in existing:
+        raise ValueError(f"Legacy order {key} has no saved execution policy; reconcile with Dhan")
     if existing.get("orderStatus") == "TRADED" and existing.get("fill_timestamp"):
         order = existing
     else:
-        order = dhan.wait_for_fill(conn, existing["orderId"], slack_channel="niftyswing")
+        order = dhan.wait_for_fill(conn, existing["orderId"], slack_channel="niftyswing",
+                                  prepared=existing["prepared"])
         if str(order.get("orderId")) != str(existing["orderId"]):
             raise ValueError(f"Broker returned a different order for {existing['orderId']}; reconcile with Dhan")
-        if order.get("orderStatus") == "TRADED":
+        if order.get("filledQty", 0) < existing.get("filledQty", 0):
+            raise ValueError(f"Order {existing['orderId']} filled quantity decreased; reconcile with Dhan")
+        if order.get("filledQty", 0) > 0:
             order["fill_timestamp"] = str(now_ist())
         orders.update_one({"_id": key}, {"$set": order})
         order = orders.find_one({"_id": key})
     if (str(order.get("securityId")) != str(contract["security_id"])
             or order.get("transactionType") != side or order.get("quantity") != quantity):
         raise ValueError(f"Order {order['orderId']} contract/side/quantity mismatch; reconcile with Dhan")
+    filled = order.get("filledQty")
+    if (not isinstance(filled, int) or not 0 <= filled <= quantity
+            or (order.get("orderStatus") == "TRADED" and filled != quantity)):
+        raise ValueError(f"Order {order['orderId']} has inconsistent fills; reconcile with Dhan")
+    if side == "BUY" and order.get("orderStatus") in dhan.FINAL_ORDER_STATUSES:
+        if order.get("filledQty", 0) > 0:
+            valid_price(order["averageTradedPrice"])
+        return order
     if order.get("orderStatus") != "TRADED" or order.get("filledQty") != quantity:
         raise ValueError(
             f"Order {order['orderId']} {order.get('orderStatus')}: "
@@ -231,19 +257,38 @@ def open_pending(conn, strategies, orders, trade, now):
                                              exit_reason="Missed next-minute entry window")})
         raise ValueError("Pending entry expired; daily slot remains consumed")
     contract = dict(security_id=trade["security_id"], symbol=trade["long_option_symbol"])
-    order = execute_order(conn, orders, key, contract, trade["quantity"], "BUY", now, trade["simulated"])
+    try:
+        order = execute_order(conn, orders, key, contract, trade["quantity"], "BUY", now, trade["simulated"])
+    except ValueError as error:
+        # Only preparation failures without a saved intent prove nothing was sent.
+        if not trade["simulated"] and orders.find_one({"_id": key}) is None:
+            strategies.update_one({"_id": trade["_id"], "strategy_state": "pending"},
+                                  {"$set": dict(strategy_state="aborted",
+                                                 exit_reason="Entry preparation refused: " + str(error))})
+        raise
+    filled = order["filledQty"]
+    if filled == 0:
+        strategies.update_one({"_id": trade["_id"], "strategy_state": "pending"},
+                              {"$set": dict(strategy_state="aborted",
+                                             exit_reason=f"Entry {order['orderStatus']} without fills: "
+                                             f"{order.get('omsErrorDescription', '')}; daily slot consumed")})
+        return
     price = valid_price(order["averageTradedPrice"])
     filled_at = order.get("fill_timestamp", order.get("createTime"))
     if filled_at is None:
         raise ValueError("Filled entry is missing its confirmation timestamp")
-    entry_fees = order_charges("options", "BUY", price, trade["quantity"])
-    marked_trade = dict(trade, long_option_cost=price)
+    entry_fees = order_charges("options", "BUY", price, filled)
+    marked_trade = dict(trade, long_option_cost=price, quantity=filled)
     updates = pnl_updates(marked_trade, price, pd.Timestamp(filled_at).to_pydatetime())
     updates["$set"].update(
         strategy_state="active", long_option_cost=price, entry_order_id=key,
         entry_timestamp=filled_at, entry_time=filled_at[11:19],
-        total_investment=money(price * trade["quantity"]), charges=sum_charges(entry_fees),
+        quantity=filled, requested_quantity=trade["quantity"],
+        total_investment=money(price * filled), charges=sum_charges(entry_fees),
         pnl=0.0, net_pnl=-entry_fees["total"])
+    if filled != trade["quantity"]:
+        updates["$set"].update(strategy_state="closing",
+                               exit_reason="Cancelled partial entry; flatten actual filled quantity")
     strategies.update_one({"_id": trade["_id"], "strategy_state": "pending"}, updates)
 
 
@@ -273,6 +318,8 @@ def status_message(strategies, now):
         return text + " | reconciling entry"
     if state == "aborted":
         return text + " | " + trade["exit_reason"] + " | daily slot consumed"
+    if state == "closing":
+        return text + " | closing; fill not confirmed | " + trade["exit_reason"]
     if state not in ("active", "closed") or "running_net_pnl" not in trade:
         return text + " | P&L monitoring unavailable; reconcile legacy/accounting state"
     if state == "closed":
@@ -364,13 +411,15 @@ def step(conn, strategies, orders, signals, user, quantity, now, simulated=True)
     trade = claim_entry(strategies, doc, user, quantity, now, simulated)
     if trade is not None:
         open_pending(conn, strategies, orders, trade, now)
-        return "Bought | " + status_message(strategies, now)
+        return "Entry processed | " + status_message(strategies, now)
     return None
 
 
 def main():
     load_dotenv(find_dotenv())
     config = settings()
+    if not config["simulated"] and not hasattr(dhan, "prepare_order"):
+        raise RuntimeError("Live execution requires tamingnifty 2.4.0 depth-order API")
     quantity = os.environ.get("quantity")
     if quantity is None:
         raise ValueError("Missing quantity; configure the existing executor job explicitly")
@@ -429,7 +478,11 @@ def main():
                     state = "ERROR: " + last_error
                 notify(slack, "Nifty status\n" + state)
                 heartbeat = now
-            time.sleep(10)
+            delay = 10
+            if not config["simulated"] and strategies.count_documents(
+                    {"strategy_state": {"$in": ["pending", "closing"]}}) > 0:
+                delay = 2
+            time.sleep(delay)
         notify(slack, "Nifty premium executor closing bell | " + status_message(strategies, now_ist()))
     finally:
         client.close()

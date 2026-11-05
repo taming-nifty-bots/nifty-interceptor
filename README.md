@@ -30,6 +30,41 @@ strategy. Version: `premium-renko-levels-1pct-20-gain10-low5-2026-11-05`.
   strictly before15:15. After restart, evaluate the latest fresh levels, even if
   an earlier breakout was missed. No historical breakout/exit replay.
 
+## November5 execution hardening
+
+Both jobs pin `tamingnifty==2.4.0`, published from shared-library commit
+`33ee1d2` and tag `v2.4.0`. The published wheel's broker source was verified
+against that commit before pushing these consumer changes. Rebuild both images;
+verify the actual Azure image configuration after the deployment workflow.
+
+Live executor persists a prepared LIMIT request, correlation ID, fixed entry
+price cap and deadline before sending. Initial BUY requires depth for the order,
+spread <=0.75%, 0.1% price cushion and a cap 1% above initial depth price.
+Entry expires after fifteen seconds or the existing entry-minute deadline, whichever
+is earlier. Pending balance is cancelled and final fills confirmed; zero fills
+abort with the daily slot consumed. A terminal partial entry is recorded at its
+actual quantity and immediately scheduled for flattening, with actual-order
+charges. Full fills racing cancellation are adopted, not ignored.
+
+Shared library monitors/modifies the same order against depth roughly once per
+two seconds. Exits retain closing state, alert after unresolved monitoring batches,
+and resume monitoring until full fill or an error requiring reconciliation.
+No automatic replacement follows rejection or an ambiguous submission. Lost
+submission replies are recovered by correlation lookup; unresolved lookup blocks
+resubmission. Legacy live intents without a saved execution policy require manual
+reconciliation. Manual broker intervention must not compete with the executor.
+
+Only pending/closing live states use a shorter outer-loop delay. Normal active
+P&L/peak monitoring and paper mode retain the existing ten-second delay.
+Signals, threshold semantics, daily cap and current-LTP paper fills are unchanged.
+These are execution-policy changes, not results from the historical backtest.
+There is no guarantee of a fill or a bounded exit loss. Verify market-depth
+entitlement, account-wide rate limits, registered outgoing IP and actual installed
+library in the image before a supervised pilot.
+
+From the shared library repository, run `python test_execution.py --swing` for
+offline library and swing-recovery checks.
+
 ## November5 profit-activated exit change
 
 Owner requested the simpler implementation: the signal adds only prior5-low
