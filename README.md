@@ -2,7 +2,7 @@
 
 The repository/job names stay unchanged. The strategy is now **intraday Nifty
 option-premium Renko buying on Dhan**, not the former Definedge straddle/PnF swing
-strategy. Version: `premium-renko-levels-1pct-20-20-2026-10-29`.
+strategy. Version: `premium-renko-levels-1pct-20-gain10-low5-2026-11-05`.
 
 ## Frozen rules
 
@@ -19,13 +19,51 @@ strategy. Version: `premium-renko-levels-1pct-20-20-2026-10-29`.
   minute. Only fresh signals at/after09:30 qualify.
 - If both latest option levels qualify together, **skip the entire day**.
 - Exit the bought option on a close strictly below the **prior20 bricks' low**,
-  or at **15:15 IST**. No target, fixed-rupee stop, partial booking, AFT/PCR,
+  using the **prior5 bricks' low** instead when saved `max_pnl_reached` is
+  **strictly greater than10%** of `total_investment`. Exactly10% still uses20.
+  Exclude current brick; keep the post-entry brick condition.
+  Exit at **15:15 IST** regardless. No target, fixed-rupee stop, partial booking, AFT/PCR,
   Supertrend filter or overnight holding.
 - **At most one trade per user/day**, including restarts and duplicate job runs.
   Closed or aborted attempts consume the day.
 - Last eligible signal minute15:13; an entry must occur in the next minute,
   strictly before15:15. After restart, evaluate the latest fresh levels, even if
   an earlier breakout was missed. No historical breakout/exit replay.
+
+## November5 profit-activated exit change
+
+Owner requested the simpler implementation: the signal adds only prior5-low
+for each option. Executor uses existing saved gross `max_pnl_reached` and
+`total_investment` with ordinary conditionals: above10% use5-low,otherwise20.
+No new trade-state field,activation helper or raw-minute fields.
+
+Existing P&L monitoring already saves maxima with Mongo `$max`,so5 remains
+selected after a profit decline or restart. Exit checks use the previously
+saved peak;the existing subsequent LTP mark updates it for the next poll.
+Accounting,one-trade cap,current-LTP paper fills and real-order mode are unchanged.
+Peaks missed during an outage cannot be recovered.
+
+This samples gross LTP P&L,not completed-minute closes. Earlier researched
+results used completed-close activation and do not establish exact results
+for this revised rule. Scalar database maxima do not record threshold-crossing
+time,so they cannot retrospectively reconstruct its precise exit sequence.
+
+Cut over **both jobs between sessions while flat**. Old-version open trades
+are deliberately rejected, not silently migrated. A same-day old-version
+signal lock is also rejected; next-session publication creates the new
+version. No historical trade rewrites or live-mode/config changes are needed.
+Deployment readiness must be verified for both job images after release;
+changing `live_trading` alone does not update the deployed code.
+
+Offline checks:
+
+```powershell
+python ..\nifty-spreads-backtest\tests\test_profit_exit.py
+python ..\nifty-spreads-backtest\tests\test_current_option_strategy.py
+python ..\nifty-spreads-backtest\tests\test_option_exits.py
+```
+
+The sections below describing October31 are historical change records.
 
 ## Signal flow simplified October31
 
@@ -59,7 +97,7 @@ and downloader tests. No live broker/Mongo calls or orders were made.
 
 | Existing path/job | New responsibility |
 |---|---|
-| `straddle/straddle.py` / signal job | From09:30, lock ATM from09:29 close/expiry, form CE/PE charts, update `close`, `high20`, `low20` in Mongo |
+| `straddle/straddle.py` / signal job | From09:30, lock ATM from09:29 close/expiry, form CE/PE charts, publish Renko close/high20/low20/low5 |
 | `OptionBuy/option_buy.py` / execution job | Read Mongo levels, decide breakouts/entries/exits, manage one trade and net P&L |
 
 All strategy code lives in these **two existing scripts**, with no added shared
@@ -81,6 +119,7 @@ configure it correctly on Option Buy.
 | `CE_close`, `PE_close` | Latest Renko closes |
 | `CE_last_20_high`, `PE_last_20_high` | High of20 prior bricks, excluding current brick |
 | `CE_last_20_low`, `PE_last_20_low` | Low of20 prior bricks, excluding current brick |
+| `CE_last_5_low`, `PE_last_5_low` | Low of5 prior bricks, excluding current brick |
 | `CE_brick_time`, `PE_brick_time` | Latest Renko brick timestamps |
 | `CE_data_asof`, `PE_data_asof` | Latest completed source-candle timestamps |
 | `skip_day` | Executor-owned marker if both latest options qualify; cleared next day |

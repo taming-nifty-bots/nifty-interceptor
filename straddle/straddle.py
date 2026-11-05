@@ -12,7 +12,7 @@ from tamingnifty import connect_dhan as dhan
 from tamingnifty import ta
 from tamingnifty import utils as util
 
-VERSION = "premium-renko-levels-1pct-20-20-2026-10-29"
+VERSION = "premium-renko-levels-1pct-20-gain10-low5-2026-11-05"
 SIGNAL_ID = "nifty_options_renko"
 
 
@@ -99,10 +99,12 @@ def option_levels(candles, day, now):
         raise ValueError("Not enough history to form Renko")
     bricks["high20"] = bricks["high"].shift(1).rolling(20).max()
     bricks["low20"] = bricks["low"].shift(1).rolling(20).min()
+    bricks["low5"] = bricks["low"].shift(1).rolling(5).min()
     latest = bricks.iloc[-1]
     return dict(brick_time=str(latest["datetime"]), close=float(latest["close"]),
                 last_20_high=float(latest["high20"]) if pd.notna(latest["high20"]) else None,
                 last_20_low=float(latest["low20"]) if pd.notna(latest["low20"]) else None,
+                last_5_low=float(latest["low5"]) if pd.notna(latest["low5"]) else None,
                 data_asof=str(data_asof))
 
 
@@ -127,7 +129,7 @@ def main():
     latest_state = "Waiting for completed09:29 candles"
     published_day = None
     try:
-        notify(slack, f"Nifty signal started | 1% 20/20 | IP {util.get_public_ip()}")
+        notify(slack, f"Nifty signal started | 1% entry20 / exit20->5 after gain>10% | IP {util.get_public_ip()}")
         while True:
             now = datetime.now(ZoneInfo("Asia/Kolkata")).replace(tzinfo=None)
             try:

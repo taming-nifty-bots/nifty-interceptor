@@ -13,7 +13,7 @@ from tamingnifty import connect_dhan as dhan
 from tamingnifty import utils as util
 from tamingnifty.charges import money, order_charges, sum_charges
 
-VERSION = "premium-renko-levels-1pct-20-20-2026-10-29"
+VERSION = "premium-renko-levels-1pct-20-gain10-low5-2026-11-05"
 SIGNAL_ID = "nifty_options_renko"
 ACTIVE_STATES = ["pending", "active", "partial", "closing"]
 
@@ -117,10 +117,14 @@ def exit_reason(trade, doc, now):
             or trade["expiry"] != doc["expiry"]):
         raise ValueError("Active trade and signal contracts disagree")
     if (pd.Timestamp(trade["entry_timestamp"]).floor("min") <= pd.Timestamp(doc[kind + "_brick_time"])
-            < pd.Timestamp(now).floor("min")
-            and doc[kind + "_last_20_low"] is not None
-            and doc[kind + "_close"] < doc[kind + "_last_20_low"]):
-        return "20 brick low breakout"
+            < pd.Timestamp(now).floor("min")):
+        if trade["max_pnl_reached"] > trade["total_investment"] * 0.10:
+            if (doc[kind + "_last_5_low"] is not None
+                    and doc[kind + "_close"] < doc[kind + "_last_5_low"]):
+                return "5 brick low breakout after gain>10%"
+        elif (doc[kind + "_last_20_low"] is not None
+                and doc[kind + "_close"] < doc[kind + "_last_20_low"]):
+            return "20 brick low breakout"
     return None
 
 
