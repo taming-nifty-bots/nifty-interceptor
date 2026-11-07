@@ -38,6 +38,7 @@ def settings():
 
 
 def notify(client, message):
+    message = "Nifty Interceptor | " + message
     print(message, flush=True)
     try:
         util.notify(message=message, slack_client=client, slack_channel="niftyswing")
@@ -426,7 +427,7 @@ def main():
     validate_quantity(quantity, 1)
     slack = WebClient(token=config["slack"])
     client = MongoClient(config["mongo"])
-    strategies = client["Bots"][f"nifty_swing_{config['user']}"]
+    strategies = client["Bots"][f"nifty_interceptor_{config['user']}"]
     orders = client["Bots"][f"orders_nifty_swing_{config['user']}"]
     signals = client["Bots"]["supertrend"]
     last_error = None

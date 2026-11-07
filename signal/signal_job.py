@@ -17,6 +17,7 @@ SIGNAL_ID = "nifty_options_renko"
 
 
 def notify(client, message):
+    message = "Nifty Interceptor | " + message
     print(message, flush=True)
     try:
         util.notify(message=message, slack_client=client, slack_channel="niftyswing")
@@ -119,7 +120,7 @@ def main():
     slack = WebClient(token=os.environ["slack_token"])
     client = MongoClient(os.environ["CONNECTION_STRING"])
     collection = client["Bots"]["supertrend"]
-    strategies = client["Bots"][f"nifty_swing_{os.environ['user_name']}"]
+    strategies = client["Bots"][f"nifty_interceptor_{os.environ['user_name']}"]
     master = None
     master_day = None
     last_minute = None

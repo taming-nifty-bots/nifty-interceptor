@@ -5,19 +5,16 @@ RUN apt-get update -y
 RUN apt-get upgrade -y
 # Change TimeZone
 ENV TZ=Asia/Calcutta
-ENV live_trading=false
 
 ENV user_name=sugam
-
-ENV instrument_name=NIFTY
 
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 RUN echo $(date)
 # Copy files to working directory
-COPY requirements.txt option_buy.py /app/src/
+COPY requirements.txt signal_job.py /app/src/
 WORKDIR /app
 # Install python packages using requirements.txt
 RUN pip install -r src/requirements.txt
 
 # Run the script
-CMD ["python", "src/option_buy.py"]
+CMD ["python", "src/signal_job.py"]

@@ -1,4 +1,4 @@
-name: Build and Deploy Trading Bot
+name: Build and Deploy Nifty Interceptor
 
 on:
   push:
@@ -7,8 +7,8 @@ on:
   workflow_dispatch:
 
 env:
-  NIFTY_IMAGE_NAME: nifty-swing-option-buy:${{ github.run_number }}   # Change as needed
-  STRADDLE_IMAGE_NAME: straddle-swing-option-buy:${{ github.run_number }}   # Change as needed
+  NIFTY_IMAGE_NAME: nifty-interceptor:${{ github.run_number }}
+  STRADDLE_IMAGE_NAME: nifty-interceptor-signal:${{ github.run_number }}
 
 jobs:
   build-and-deploy:
@@ -33,8 +33,8 @@ jobs:
           
       - name: Build Docker image
         run: |
-          docker build -t ${{ secrets.ACR_NAME }}.azurecr.io/${{ env.NIFTY_IMAGE_NAME }} ./OptionBuy
-          docker build -t ${{ secrets.ACR_NAME }}.azurecr.io/${{ env.STRADDLE_IMAGE_NAME }} ./straddle
+          docker build -t ${{ secrets.ACR_NAME }}.azurecr.io/${{ env.NIFTY_IMAGE_NAME }} ./executor
+          docker build -t ${{ secrets.ACR_NAME }}.azurecr.io/${{ env.STRADDLE_IMAGE_NAME }} ./signal
       - name: Push Docker image
         run: |
           docker push ${{ secrets.ACR_NAME }}.azurecr.io/${{ env.NIFTY_IMAGE_NAME }}
@@ -45,7 +45,7 @@ jobs:
         with:
           inlineScript: |
             az containerapp job update \
-              --name ${{ secrets.OPTION_BUY_JOB_NAME }} \
+              --name nifty-interceptor \
               --resource-group ${{ secrets.RESOURCE_GROUP }} \
               --image ${{ secrets.ACR_NAME }}.azurecr.io/${{ env.NIFTY_IMAGE_NAME }}
 
@@ -54,7 +54,7 @@ jobs:
         with:
           inlineScript: |
             az containerapp job update \
-              --name ${{ secrets.SIGNAL_JOB_NAME }} \
+              --name nifty-interceptor-signal \
               --resource-group ${{ secrets.RESOURCE_GROUP }} \
               --image ${{ secrets.ACR_NAME }}.azurecr.io/${{ env.STRADDLE_IMAGE_NAME }}
 
@@ -62,18 +62,18 @@ jobs:
         uses: azure/CLI@v1
         with:
           inlineScript: |
-            running_jobs=$(az containerapp job execution list --name ${{ secrets.SIGNAL_JOB_NAME }} --resource-group ${{ secrets.RESOURCE_GROUP }} --query "[?properties.status=='Running']")
+            running_jobs=$(az containerapp job execution list --name nifty-interceptor-signal --resource-group ${{ secrets.RESOURCE_GROUP }} --query "[?properties.status=='Running']")
             if [ "$running_jobs" != "[]" ]; then
-              az containerapp job stop -n ${{ secrets.SIGNAL_JOB_NAME }} -g ${{ secrets.RESOURCE_GROUP }}
-              az containerapp job start -n ${{ secrets.SIGNAL_JOB_NAME }} -g ${{ secrets.RESOURCE_GROUP }}
+              az containerapp job stop -n nifty-interceptor-signal -g ${{ secrets.RESOURCE_GROUP }}
+              az containerapp job start -n nifty-interceptor-signal -g ${{ secrets.RESOURCE_GROUP }}
             fi
 
       - name: Restart running Option Buy jobs
         uses: azure/CLI@v1
         with:
           inlineScript: |
-            running_jobs=$(az containerapp job execution list --name ${{ secrets.OPTION_BUY_JOB_NAME }} --resource-group ${{ secrets.RESOURCE_GROUP }} --query "[?properties.status=='Running']")
+            running_jobs=$(az containerapp job execution list --name nifty-interceptor --resource-group ${{ secrets.RESOURCE_GROUP }} --query "[?properties.status=='Running']")
             if [ "$running_jobs" != "[]" ]; then
-              az containerapp job stop -n ${{ secrets.OPTION_BUY_JOB_NAME }} -g ${{ secrets.RESOURCE_GROUP }}
-              az containerapp job start -n ${{ secrets.OPTION_BUY_JOB_NAME }} -g ${{ secrets.RESOURCE_GROUP }}
+              az containerapp job stop -n nifty-interceptor -g ${{ secrets.RESOURCE_GROUP }}
+              az containerapp job start -n nifty-interceptor -g ${{ secrets.RESOURCE_GROUP }}
             fi

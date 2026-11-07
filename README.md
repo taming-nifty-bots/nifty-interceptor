@@ -1,8 +1,14 @@
-# nifty-swing-option-buy
+# Nifty Interceptor
 
-The repository/job names stay unchanged. The strategy is now **intraday Nifty
-option-premium Renko buying on Dhan**, not the former Definedge straddle/PnF swing
+The strategy is **intraday Nifty option-premium Renko buying on Dhan**,
+not the former Definedge straddle/PnF swing
 strategy. Version: `premium-renko-levels-1pct-20-gain10-low5-2026-11-05`.
+
+At cutover, suspend the old jobs and copy and verify trade history from
+`nifty_swing_<user_name>` to `nifty_interceptor_<user_name>` while preserving the
+old collection. The order collection, signal ID, strategy version and daily
+trade keys are unchanged. Never run old and new live jobs together; copying
+state is not synchronization.
 
 ## Frozen rules
 
@@ -119,7 +125,7 @@ Offline checks in the existing sibling research repository:
 
 ```powershell
 python ..\nifty-spreads-backtest\tests\test_current_option_strategy.py
-python -m compileall -q OptionBuy straddle
+python -m compileall -q executor signal
 ```
 
 Eighteen focused replay/signal checks pass, including five new mocked job-flow
@@ -130,15 +136,15 @@ and downloader tests. No live broker/Mongo calls or orders were made.
 
 ## Preserved jobs and storage
 
-| Existing path/job | New responsibility |
+| Path/job | Responsibility |
 |---|---|
-| `straddle/straddle.py` / signal job | From09:30, lock ATM from09:29 close/expiry, form CE/PE charts, publish Renko close/high20/low20/low5 |
-| `OptionBuy/option_buy.py` / execution job | Read Mongo levels, decide breakouts/entries/exits, manage one trade and net P&L |
+| `signal/signal_job.py` / signal job | From09:30, lock ATM from09:29 close/expiry, form CE/PE charts, publish Renko close/high20/low20/low5 |
+| `executor/executor.py` / execution job | Read Mongo levels, decide breakouts/entries/exits, manage one trade and net P&L |
 
 All strategy code lives in these **two existing scripts**, with no added shared
 module or test/configuration files. The signal job makes no trading decisions.
 
-Mongo database remains `Bots`, with `nifty_swing_<user_name>` and
+Mongo database remains `Bots`, with `nifty_interceptor_<user_name>` and
 `orders_nifty_swing_<user_name>`. Signal data uses **one reusable document** in
 `supertrend`: **`_id = nifty_options_renko`**, shared by both jobs, with no user
 name or date suffix. `user_name` still selects executor trade/order collections;
@@ -267,20 +273,21 @@ Neither the exact15:15 fill time nor a maximum monetary loss is guaranteed.
 
 ## Configuration and pipeline
 
-Existing job names, image names, push-to-master/workflow-dispatch triggers, both
-entrypoint paths and restart steps are preserved. Each image uses its original
-job-directory context; build from the repository root:
+The planned Azure jobs are `nifty-interceptor` and `nifty-interceptor-signal`;
+image names match. Push-to-master/workflow-dispatch triggers and restart steps
+remain. Provision the new jobs and suspend the old jobs before deployment.
+Build from the repository root:
 
 ```powershell
-docker build -t nifty-swing-option-buy:test .\OptionBuy
-docker build -t straddle-swing-option-buy:test .\straddle
+docker build -t nifty-interceptor:test .\executor
+docker build -t nifty-interceptor-signal:test .\signal
 ```
 
 Dockerfiles copy **only** their existing script and `requirements.txt`, never
 `.env` or other source-directory files. Never bake credentials into either image.
 
-The GitHub workflow is unchanged from the original pipeline. Keep its existing
-Azure/ACR/job deployment secrets; **do not add Dhan credentials to GitHub**.
+The GitHub workflow targets the new jobs and image names. Keep its existing
+Azure/ACR credentials and resource-group secret; **do not add Dhan credentials to GitHub**.
 Configure `DHAN_CLIENT_ID`, `DHAN_PIN`, `DHAN_TOTP` directly on **both container
 jobs**, for the same account used by the shared token store. Prefer container-job
 secret references for sensitive values. Set `live_trading=false` on Option Buy
@@ -303,11 +310,11 @@ variables before starting; Definedge-only credentials cannot run this port.
 ## Validation and release status
 
 ```powershell
-python -m pip install -r OptionBuy\requirements.txt
-python -m compileall -q OptionBuy straddle
+python -m pip install -r executor\requirements.txt
+python -m compileall -q executor signal
 ```
 
-Both dependency manifests pin `tamingnifty==2.3.2`. Before the fixed-document change,
+Both dependency manifests pin `tamingnifty==2.4.0`. Before the fixed-document change,
 after simplifying to two
 scripts,28 offline checks pass, including exact published levels, strict
 breakout comparisons in the executor, updates without new bricks, insufficient
