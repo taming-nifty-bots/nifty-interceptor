@@ -428,7 +428,7 @@ def main():
     slack = WebClient(token=config["slack"])
     client = MongoClient(config["mongo"])
     strategies = client["Bots"][f"nifty_interceptor_{config['user']}"]
-    orders = client["Bots"][f"orders_nifty_swing_{config['user']}"]
+    orders = client["Bots"][f"orders_nifty_interceptor_{config['user']}"]
     signals = client["Bots"]["supertrend"]
     last_error = None
     last_alert = now_ist()

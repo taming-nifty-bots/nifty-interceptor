@@ -6,8 +6,11 @@ strategy. Version: `premium-renko-levels-1pct-20-gain10-low5-2026-11-05`.
 
 At cutover, suspend the old jobs and copy and verify trade history from
 `nifty_swing_<user_name>` to `nifty_interceptor_<user_name>` while preserving the
-old collection. The order collection, signal ID, strategy version and daily
-trade keys are unchanged. Never run old and new live jobs together; copying
+old collection. Start new order/recovery records in
+`orders_nifty_interceptor_<user_name>` without copying old order records.
+Switch order collections only between sessions while flat, with no unresolved
+orders or recovery intents; keep the old collection for history. Signal ID,
+strategy version and daily trade keys are unchanged. Never run old and new live jobs together; copying
 state is not synchronization.
 
 Both jobs send strategy and broker-related Slack notifications to
@@ -148,7 +151,7 @@ All strategy code lives in these **two existing scripts**, with no added shared
 module or test/configuration files. The signal job makes no trading decisions.
 
 Mongo database remains `Bots`, with `nifty_interceptor_<user_name>` and
-`orders_nifty_swing_<user_name>`. Signal data uses **one reusable document** in
+`orders_nifty_interceptor_<user_name>`. Signal data uses **one reusable document** in
 `supertrend`: **`_id = nifty_options_renko`**, shared by both jobs, with no user
 name or date suffix. `user_name` still selects executor trade/order collections;
 configure it correctly on Option Buy.
