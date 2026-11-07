@@ -10,6 +10,9 @@ old collection. The order collection, signal ID, strategy version and daily
 trade keys are unchanged. Never run old and new live jobs together; copying
 state is not synchronization.
 
+Both jobs send strategy and broker-related Slack notifications to
+`#nifty-interceptor`. The Slack bot must have access to that channel.
+
 ## Frozen rules
 
 - At **09:30**, lock ATM from Nifty's completed **09:29 minute close**, rounded

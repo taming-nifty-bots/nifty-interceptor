@@ -41,7 +41,7 @@ def notify(client, message):
     message = "Nifty Interceptor | " + message
     print(message, flush=True)
     try:
-        util.notify(message=message, slack_client=client, slack_channel="niftyswing")
+        util.notify(message=message, slack_client=client, slack_channel="nifty-interceptor")
     except Exception as error:
         print("Slack notification failed: " + util.exception_detail(error), flush=True)
 
@@ -192,7 +192,7 @@ def live_order(conn, orders, key, contract, quantity, side, now, existing):
     if existing.get("orderStatus") == "TRADED" and existing.get("fill_timestamp"):
         order = existing
     else:
-        order = dhan.wait_for_fill(conn, existing["orderId"], slack_channel="niftyswing",
+        order = dhan.wait_for_fill(conn, existing["orderId"], slack_channel="nifty-interceptor",
                                   prepared=existing["prepared"])
         if str(order.get("orderId")) != str(existing["orderId"]):
             raise ValueError(f"Broker returned a different order for {existing['orderId']}; reconcile with Dhan")
@@ -450,7 +450,7 @@ def main():
                     break
                 if (now.strftime("%H:%M") >= "09:31" or strategies.count_documents(
                         {"strategy_state": {"$in": ACTIVE_STATES}}) > 0):
-                    conn = dhan.login_to_dhan(slack_channel="niftyswing")
+                    conn = dhan.login_to_dhan(slack_channel="nifty-interceptor")
                     message = step(conn, strategies, orders, signals, config["user"], quantity,
                                    now_ist(), config["simulated"])
                     if message == "Waiting for today's signal":

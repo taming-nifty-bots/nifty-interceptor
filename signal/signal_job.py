@@ -20,7 +20,7 @@ def notify(client, message):
     message = "Nifty Interceptor | " + message
     print(message, flush=True)
     try:
-        util.notify(message=message, slack_client=client, slack_channel="niftyswing")
+        util.notify(message=message, slack_client=client, slack_channel="nifty-interceptor")
     except Exception as error:
         print("Slack notification failed: " + util.exception_detail(error), flush=True)
 
@@ -144,7 +144,7 @@ def main():
                     break
                 minute = now.replace(second=0, microsecond=0)
                 if now.weekday() < 5 and now.strftime("%H:%M") >= "09:30" and minute != last_minute:
-                    conn = dhan.login_to_dhan(slack_channel="niftyswing")
+                    conn = dhan.login_to_dhan(slack_channel="nifty-interceptor")
                     if master_day != now.date():
                         master = dhan.load_instruments()
                         master_day = now.date()
