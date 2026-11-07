@@ -235,7 +235,8 @@ time. Recorded live entry/exit timestamps are local confirmed-fill observation
 times, not backdated broker placement times.
 
 `pnl` remains gross. `tamingnifty.charges` supplies itemized `charges`, and
-`net_pnl = pnl - charges.total`. An active trade has zero realized gross and its
+`net_pnl = pnl - charges.total` is written only after confirmed closure.
+An active trade has zero realized gross and its
 entry fees; `running_pnl` is the current gross mark, not realized P&L. Closed
 records include both executed orders' fees; no flat fee, charge schedule or
 estimate metadata fields are added.
@@ -247,16 +248,20 @@ estimate metadata fields are added.
   Executor mode appears only at startup.
 - Signal alerts show ATM/expiry and update time, not every channel value. Full
   close/high20/low20/source details remain in console logs and Mongo.
-- Executor alerts show symbol/quantity, entry time/price, estimated net and net
-  max/min. Final summary adds exit time/price, realized net, gross, charges and
-  reason. Gross extrema and full timestamps remain stored, not repeated in Slack.
-- `running_net_pnl` estimates liquidation net using filled entry plus a hypothetical
-  exit's charges. It does not replace realized `net_pnl`. Persistent
-  `max_pnl_reached`/`min_pnl_reached` track gross marks; `max_net_pnl_reached`/
-  `min_net_pnl_reached` track estimated net marks. They include entry and final
+- Executor alerts show symbol/quantity, entry time/price and current gross P&L.
+  Final summary adds exit time/price, final net, gross, charges and reason.
+  Gross extrema and full timestamps remain stored, not repeated in Slack.
+- Persistent `max_pnl_reached`/`min_pnl_reached` track gross marks, including entry and final
   fills, survive restarts, and reflect **observed** polling marks, not true
   tick-by-tick extremes. Errors/stale signals can leave gaps; heartbeat errors
   show the current error rather than repeating an old position snapshot.
+
+New Mongo trade IDs use `interceptor:YYYY-MM-DD`; order-record IDs append
+`:BUY` or `:SELL`. User isolation comes from the per-user collections.
+`strategy_version` remains a separate field; short IDs preserve the daily
+duplicate-entry guard across strategy revisions. Broker order IDs and hashed
+correlation IDs are unchanged. Historical entry/exit order references are kept
+when only a closed trade's Mongo ID is shortened.
 
 Both jobs exit once today's trade is confirmed `closed` and no pending, active,
 partial or closing record remains. Executor exits immediately after its final

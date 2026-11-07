@@ -47,7 +47,7 @@ def notify(client, message):
 
 
 def trade_id(user, day):
-    return f"{VERSION}:{user}:{day}"
+    return f"interceptor:{day}"
 
 
 def valid_price(price):
@@ -286,7 +286,7 @@ def open_pending(conn, strategies, orders, trade, now):
         entry_timestamp=filled_at, entry_time=filled_at[11:19],
         quantity=filled, requested_quantity=trade["quantity"],
         total_investment=money(price * filled), charges=sum_charges(entry_fees),
-        pnl=0.0, net_pnl=-entry_fees["total"])
+        pnl=0.0)
     if filled != trade["quantity"]:
         updates["$set"].update(strategy_state="closing",
                                exit_reason="Cancelled partial entry; flatten actual filled quantity")
@@ -295,15 +295,10 @@ def open_pending(conn, strategies, orders, trade, now):
 
 def pnl_updates(trade, price, now):
     gross = money(trade["quantity"] * (price - trade["long_option_cost"]))
-    fees = sum_charges(
-        order_charges("options", "BUY", trade["long_option_cost"], trade["quantity"]),
-        order_charges("options", "SELL", price, trade["quantity"]))
-    net = money(gross - fees["total"])
-    # Net mark assumes closing now; realized fields still count only filled orders.
     return {
-        "$set": dict(running_pnl=gross, running_net_pnl=net, last_mark=str(now)),
-        "$max": dict(max_pnl_reached=gross, max_net_pnl_reached=net),
-        "$min": dict(min_pnl_reached=gross, min_net_pnl_reached=net),
+        "$set": dict(running_pnl=gross, last_mark=str(now)),
+        "$max": dict(max_pnl_reached=gross),
+        "$min": dict(min_pnl_reached=gross),
     }
 
 
@@ -321,20 +316,18 @@ def status_message(strategies, now):
         return text + " | " + trade["exit_reason"] + " | daily slot consumed"
     if state == "closing":
         return text + " | closing; fill not confirmed | " + trade["exit_reason"]
-    if state not in ("active", "closed") or "running_net_pnl" not in trade:
+    if state not in ("active", "closed") or "running_pnl" not in trade:
         return text + " | P&L monitoring unavailable; reconcile legacy/accounting state"
     if state == "closed":
         text += (f"\nEntry {trade['entry_time']} @ {trade['long_option_cost']:.2f}"
                  f" -> Exit {trade['exit_time']} @ {trade['long_exit_price']:.2f}"
                  f"\nNet Rs{trade['net_pnl']:.2f} | P&L Rs{trade['pnl']:.2f}"
                  f" | Charges Rs{trade['charges']['total']:.2f}"
-                 f"\nNet max/min Rs{trade['max_net_pnl_reached']:.2f}"
-                 f" / Rs{trade['min_net_pnl_reached']:.2f} | {trade['exit_reason']}")
+                 f" | {trade['exit_reason']}")
     else:
         text += (f"\nEntry {trade['entry_time']} @ {trade['long_option_cost']:.2f}"
-                 f" | Net est. Rs{trade['running_net_pnl']:.2f}"
-                 f"\nNet max/min Rs{trade['max_net_pnl_reached']:.2f}"
-                 f" / Rs{trade['min_net_pnl_reached']:.2f} | As of {trade['last_mark'][11:19]}")
+                 f" | Gross P&L Rs{trade['running_pnl']:.2f}"
+                 f" | As of {trade['last_mark'][11:19]}")
     return text
 
 
