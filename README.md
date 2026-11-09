@@ -42,7 +42,41 @@ Both jobs send strategy and broker-related Slack notifications to
   strictly before15:15. After restart, evaluate the latest fresh levels, even if
   an earlier breakout was missed. No historical breakout/exit replay.
 
-## November5 execution hardening
+## November9 best-price-first execution and saved depth
+
+Local executor now opts into shared `tamingnifty==2.4.2` best-price-first
+execution for both BUY and SELL. The signal pin follows the same release.
+Publish the shared release before rebuilding/deploying either job; these
+source changes alone do not update an existing live image.
+
+BUY starts at the current best ask; SELL starts at the current best bid,
+without the0.1% cushion. Allow up to three seconds for a fill, then reprice any
+remaining quantity from fresh cumulative depth with the existing0.1% cushion.
+The whole order quantity stays unchanged during modification. Entry spread,
+depth-size, fixed1% cap and15-second/entry-minute deadline remain unchanged.
+SELL retains closure priority with no fixed price floor; this is not a
+guarantee against slippage during a real drop or thin book.
+
+Each order's saved `prepared.initial_quote` contains the complete returned
+quote, all returned bid/ask levels, quantities, receipt time and selected
+reference/limit before submission.
+Initial intent insertion must be acknowledged before the order is submitted.
+Subsequent pricing evaluations are
+inserted as separate documents in `Bots.order_quotes_nifty_interceptor_<user>`
+before modifications, including invalid books with their errors. Each record
+links `order_key` and broker `order_id`; this avoids an unbounded array inside
+the order document. Recovery uses the same order/policy and audit collection.
+A candidate can be unused if a fill races its quote; broker order
+responses remain the fill authority. Audit-write failure blocks further
+repricing and raises an explicit executor error, not a fabricated fill.
+Only the REST-provided depth levels can be saved, not the entire exchange
+book. Historical unsaved depth, including the November9 exit, is unrecoverable.
+Other bots do not opt into this change. Signals, Renko exit rules, accounting,
+daily trade cap and paper fills are unchanged.
+
+Offline validation: `python test_execution.py --swing` in the shared repository.
+
+## November5 execution hardening (historical)
 
 Both jobs pin `tamingnifty==2.4.0`, published from shared-library commit
 `33ee1d2` and tag `v2.4.0`. The published wheel's broker source was verified

@@ -163,16 +163,19 @@ def live_order(conn, orders, key, contract, quantity, side, now, existing):
         prepared = dhan.prepare_order(
             conn, contract["security_id"], side, quantity, "NSE_FNO", "MARGIN",
             entry_deadline=deadline.replace(tzinfo=ZoneInfo("Asia/Kolkata")).timestamp()
-            if side == "BUY" else None, correlation_id=correlation)
+            if side == "BUY" else None, correlation_id=correlation,
+            best_price_first=True)
         intent = dict(_id=key, orderStatus="SUBMITTING", transactionType=side,
                       securityId=contract["security_id"], tradingSymbol=contract["symbol"],
                       quantity=quantity, simulated=False, strategy_version=VERSION,
                       prepared=prepared, correlationId=correlation)
         try:
-            orders.insert_one(intent)
+            result = orders.insert_one(intent)
         except DuplicateKeyError:
             existing = orders.find_one({"_id": key})
         else:
+            if not result.acknowledged:
+                raise RuntimeError("Order intent and initial quote were not acknowledged; no order submitted")
             # Never resubmit after an ambiguous response or a crash after sending.
             placed = dhan.submit_prepared_order(conn, prepared)
             if not placed.get("orderId"):
@@ -193,7 +196,10 @@ def live_order(conn, orders, key, contract, quantity, side, now, existing):
         order = existing
     else:
         order = dhan.wait_for_fill(conn, existing["orderId"], slack_channel="nifty-interceptor",
-                                  prepared=existing["prepared"])
+                                  prepared=existing["prepared"],
+                                  audit_collection=orders.database[
+                                      orders.name.replace("orders_", "order_quotes_", 1)],
+                                  audit_id=key)
         if str(order.get("orderId")) != str(existing["orderId"]):
             raise ValueError(f"Broker returned a different order for {existing['orderId']}; reconcile with Dhan")
         if order.get("filledQty", 0) < existing.get("filledQty", 0):
