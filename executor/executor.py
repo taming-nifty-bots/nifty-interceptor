@@ -144,7 +144,8 @@ def execute_order(conn, orders, key, contract, quantity, side, now, simulated):
             raise ValueError("Quote arrived outside the entry minute; no buy recorded")
     order = dict(_id=key, orderId=key, orderStatus="TRADED", transactionType=side,
                  securityId=contract["security_id"], tradingSymbol=contract["symbol"],
-                 exchangeSegment="NSE_FNO", quantity=quantity, filledQty=quantity,
+                 exchangeSegment="NSE_FNO", productType="INTRADAY",
+                 quantity=quantity, filledQty=quantity,
                  averageTradedPrice=price, createTime=str(filled_at), simulated=True,
                  strategy_version=VERSION)
     try:
@@ -161,7 +162,7 @@ def live_order(conn, orders, key, contract, quantity, side, now, existing):
             raise ValueError("Order submission missed the entry minute")
         correlation = hashlib.sha256(key.encode("utf-8")).hexdigest()[:30]
         prepared = dhan.prepare_order(
-            conn, contract["security_id"], side, quantity, "NSE_FNO", "MARGIN",
+            conn, contract["security_id"], side, quantity, "NSE_FNO", "INTRADAY",
             entry_deadline=deadline.replace(tzinfo=ZoneInfo("Asia/Kolkata")).timestamp()
             if side == "BUY" else None, correlation_id=correlation,
             best_price_first=True)

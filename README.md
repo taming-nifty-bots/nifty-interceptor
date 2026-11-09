@@ -42,6 +42,22 @@ Both jobs send strategy and broker-related Slack notifications to
   strictly before15:15. After restart, evaluate the latest fresh levels, even if
   an earlier breakout was missed. No historical breakout/exit replay.
 
+## November9 intraday/MIS product
+
+New Interceptor BUY and SELL orders use Dhan `productType=INTRADAY`
+(intraday/MIS), not `MARGIN`. `orderType` remains `LIMIT`; best-price-first,
+three-second wait, repricing and depth auditing are unchanged. Paper order
+records carry the same product label without changing their quote-based fills.
+Saved pre-change live intents retain their original product during recovery;
+historical records are not rewritten. Other bots keep their existing products.
+
+Dhan intraday positions are subject to broker auto-square-off; the bot's
+15:15 exit remains in place. Broker-side closure is not automatically
+reconciled by this change, so a stuck exit still requires monitoring.
+Rebuild/deploy the executor image for this product change to take effect;
+existing images are not updated merely by editing source.
+API product vocabulary: https://dhanhq.co/docs/v2/orders/.
+
 ## November9 best-price-first execution and saved depth
 
 Local executor now opts into shared `tamingnifty==2.4.2` best-price-first
