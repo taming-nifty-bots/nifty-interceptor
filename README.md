@@ -1,5 +1,14 @@
 # Nifty Interceptor
 
+## NSE startup calendar
+
+Both jobs require `tamingnifty==2.4.3` and the annual `NSE:YYYY` document
+in `Bots.exchange_calendars`. Startup checks the IST trading date before broker
+login, market data, state writes or polling, in paper and live modes. Holidays
+and weekends exit successfully; missing/invalid calendars or DB failures abort
+nonzero (fail-closed). Seed and verify the current year's calendar before starting.
+Offline startup checks: `python test_startup_calendar.py`.
+
 The strategy is **intraday Nifty option-premium Renko buying on Dhan**,
 not the former Definedge straddle/PnF swing
 strategy. Version: `premium-renko-levels-1pct-20-gain10-low5-2026-11-05`.
@@ -375,7 +384,7 @@ python -m pip install -r executor\requirements.txt
 python -m compileall -q executor signal
 ```
 
-Both dependency manifests pin `tamingnifty==2.4.0`. Before the fixed-document change,
+Both dependency manifests now pin `tamingnifty==2.4.3`. Before the fixed-document change,
 after simplifying to two
 scripts,28 offline checks pass, including exact published levels, strict
 breakout comparisons in the executor, updates without new bricks, insufficient

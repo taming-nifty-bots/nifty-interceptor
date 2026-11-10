@@ -13,6 +13,7 @@ from slack_sdk import WebClient
 from tamingnifty import connect_dhan as dhan
 from tamingnifty import utils as util
 from tamingnifty.charges import money, order_charges, sum_charges
+from tamingnifty.safety import check_trading_day
 
 VERSION = "premium-renko-levels-1pct-20-gain10-low5-2026-11-05"
 SIGNAL_ID = "nifty_options_renko"
@@ -427,6 +428,9 @@ def main():
     validate_quantity(quantity, 1)
     slack = WebClient(token=config["slack"])
     client = MongoClient(config["mongo"])
+    if not check_trading_day(client, lambda message: notify(slack, message)):
+        client.close()
+        return
     strategies = client["Bots"][f"nifty_interceptor_{config['user']}"]
     orders = client["Bots"][f"orders_nifty_interceptor_{config['user']}"]
     signals = client["Bots"]["supertrend"]

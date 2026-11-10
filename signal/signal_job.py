@@ -11,6 +11,7 @@ from slack_sdk import WebClient
 from tamingnifty import connect_dhan as dhan
 from tamingnifty import ta
 from tamingnifty import utils as util
+from tamingnifty.safety import check_trading_day
 
 VERSION = "premium-renko-levels-1pct-20-gain10-low5-2026-11-05"
 SIGNAL_ID = "nifty_options_renko"
@@ -119,6 +120,9 @@ def main():
         raise ValueError("This strategy supports NIFTY only")
     slack = WebClient(token=os.environ["slack_token"])
     client = MongoClient(os.environ["CONNECTION_STRING"])
+    if not check_trading_day(client, lambda message: notify(slack, message)):
+        client.close()
+        return
     collection = client["Bots"]["supertrend"]
     strategies = client["Bots"][f"nifty_interceptor_{os.environ['user_name']}"]
     master = None
