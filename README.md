@@ -1,8 +1,21 @@
 # Nifty Interceptor
 
+## November13 entry spread-filter change
+
+The local executor disables the 0.75% entry spread rejection, including during
+repricing. Wide spreads can increase trading costs. It still validates the
+book, requires displayed entry depth and retains its 1% price cap and entry
+deadline. Previously saved intents retain their saved execution policy; older
+intents without the opt-out continue to enforce the spread check.
+
+The executor now requires `tamingnifty==2.4.5`; that shared release must be
+published and the executor rebuilt before this change can run. This source
+change does not alter the currently deployed image. The signal job still
+requires 2.4.3. No deployment is implied.
+
 ## NSE startup calendar
 
-Both jobs require `tamingnifty==2.4.3` and the annual `NSE:YYYY` document
+Both jobs require the annual `NSE:YYYY` document
 in `Bots.exchange_calendars`. Startup checks the IST trading date before broker
 login, market data, state writes or polling, in paper and live modes. Holidays
 and weekends exit successfully; missing/invalid calendars or DB failures abort

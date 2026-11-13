@@ -166,7 +166,7 @@ def live_order(conn, orders, key, contract, quantity, side, now, existing):
             conn, contract["security_id"], side, quantity, "NSE_FNO", "INTRADAY",
             entry_deadline=deadline.replace(tzinfo=ZoneInfo("Asia/Kolkata")).timestamp()
             if side == "BUY" else None, correlation_id=correlation,
-            best_price_first=True)
+            best_price_first=True, check_spread=False)
         intent = dict(_id=key, orderStatus="SUBMITTING", transactionType=side,
                       securityId=contract["security_id"], tradingSymbol=contract["symbol"],
                       quantity=quantity, simulated=False, strategy_version=VERSION,
