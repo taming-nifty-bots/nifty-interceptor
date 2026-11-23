@@ -1,5 +1,6 @@
 """Offline startup tests; execute real main ASTs without importing broker modules."""
 import ast
+import inspect
 import os
 import unittest
 from pathlib import Path
@@ -34,7 +35,8 @@ class StartupCalendarTests(unittest.TestCase):
                     and "check_trading_day" in ast.unparse(n.test))
         allowed = {"load_dotenv", "find_dotenv", "settings", "hasattr", "validate_quantity",
                    "WebClient", "MongoClient", "clients", "notify", "os.environ.get",
-                   "ValueError", "RuntimeError", "os.environ.get(key, '').strip"}
+                   "ValueError", "RuntimeError", "os.environ.get(key, '').strip",
+                   "inspect.signature"}
         for node in ast.walk(main):
             if isinstance(node, ast.Call) and node.lineno < gate.lineno:
                 self.assertIn(ast.unparse(node.func), allowed)
@@ -60,7 +62,12 @@ class StartupCalendarTests(unittest.TestCase):
                          load_dotenv=Mock(), find_dotenv=Mock(), validate_quantity=Mock(),
                          settings=lambda: dict(simulated=not live, mongo="offline", slack="offline",
                                                user="test"),
-                         dhan=Mock(), os=os, live_trading=live,
+                         dhan=SimpleNamespace(
+                             execution_event=Mock(),
+                             prepare_order=lambda conn, on_event=None: None,
+                             wait_for_fill=lambda conn, order_id, on_alert=None,
+                             notification_state=None: None),
+                         inspect=inspect, os=os, live_trading=live,
                          util=SimpleNamespace(exception_detail=str),
                          traceback=SimpleNamespace(print_exc=Mock()),
                          after_gate=Mock(side_effect=StartupPassed))

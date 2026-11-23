@@ -200,6 +200,7 @@ def main():
                     for kind in ("CE", "PE"):
                         details += (f" | {kind} close={doc[kind + '_close']} "
                                          f"high20={doc[kind + '_last_20_high']} "
+                                         f"low5={doc[kind + '_last_5_low']} "
                                          f"low20={doc[kind + '_last_20_low']} "
                                          f"asof={doc[kind + '_data_asof']}")
                     print(details, flush=True)

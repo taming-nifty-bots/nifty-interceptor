@@ -1,5 +1,60 @@
 # Nifty Interceptor
 
+## November23 phase notifications (released with `tamingnifty` 2.4.7, 2026-11-24)
+
+Executor phase notifications now show entry/exit observations with completed
+signal time and Renko levels, fresh depth requests and preparation failures,
+saved-intent recovery, order submission, broker status and actual filled
+quantity/average price. Gain>10% activation has its own alert with both channel
+lows; it explicitly says this is not profit booking. Failed/unconfirmed
+submissions and failed fill monitoring retain the original recovery behavior;
+an order is not described as filled merely because submission succeeded.
+
+Routine ten-second LTP requests, results, failures and gross P&L/channel marks
+are console-only. Each signal publication log also includes low5 alongside
+low20, so both channels can be audited before a reversal.
+The existing executor error notification still alerts on
+monitoring failures. Paper fills are explicitly labelled as paper, not broker
+orders. No strategy-version, exit-rule, sizing, charge or data-schema change
+is included. Expanded internal monitor events require the new shared API below.
+
+Owner revised the timing choice: routine order phases, including initial
+quote request/preparation, submission, unfilled/partial status, repricing and
+modification, are logged immediately and bundled into a timestamped Slack
+timeline after monitoring and broker-result persistence. No routine order
+phase Slack call delays submission or normal fill monitoring.
+One immediate warning is sent if a subsequent broker check still shows
+unfilled/partial status after two accepted repricing requests. Quote fetches,
+saved snapshots, unchanged prices and failed/skipped modifications do not
+count. A full fill after the second repricing suppresses the warning.
+The count/warning flag is retained per order in process memory across
+monitoring/recovery passes, removed on a terminal result, and resets on
+process restart; it is not reconstructed from quote records or stored in Mongo.
+Quote/audit/order errors, uncertain outcomes and cancellation requests/responses
+remain immediate. Monitoring pass end produces the accumulated timeline even
+if the order is still working. Existing entry/exit observation and gain
+activation alerts are unchanged, so those pre-quote notices can still add latency.
+A saved quote or successful modification response is not labelled as a fill.
+Order ID, old/new price and filled/remaining/unchanged total quantity make
+these states distinguishable.
+
+Exceptional synchronous Slack calls can still delay repricing, fills and exits.
+Callback-enabled monitoring rechecks BUY deadlines after notices, reduces
+the initial wait if notification time consumes the entry deadline, and skips
+modifications using quotes older than three seconds. These safeguards do not
+guarantee a fill or bounded loss. Existing quote storage locations are unchanged.
+
+Both jobs pin `tamingnifty==2.4.7` (published to PyPI 2026-11-24; the wheel was checked
+byte-for-byte against tag `v2.4.7`), and the executor refuses live startup without the
+event API. Pushing this to `master` builds and deploys both images through the
+workflow; the workflow restarts a job only if it is running at the time. Until that
+deploy has run and a market session has been observed, treat the new notifications as
+unverified in production.
+
+Offline checks: `python test_execution.py --swing` from the shared repository,
+`python tests\test_profit_exit.py` from the research harness, and
+`python test_startup_calendar.py` from this repository.
+
 ## November13 entry spread-filter change
 
 The local executor disables the 0.75% entry spread rejection, including during
@@ -8,10 +63,30 @@ book, requires displayed entry depth and retains its 1% price cap and entry
 deadline. Previously saved intents retain their saved execution policy; older
 intents without the opt-out continue to enforce the spread check.
 
-The executor now requires `tamingnifty==2.4.5`; that shared release must be
-published and the executor rebuilt before this change can run. This source
-change does not alter the currently deployed image. The signal job still
-requires 2.4.3. No deployment is implied.
+The November13 change required `tamingnifty==2.4.5`; the later notification and
+429-retry changes supersede that pin with 2.4.7, and **both jobs pin the same
+version, 2.4.7** (the signal job only fetches candles; its Renko/channel code in
+`ta.py` is byte-identical to 2.4.3 and it uses none of the new hooks).
+
+## HTTP 429 handling (released with `tamingnifty` 2.4.7)
+
+On 2026-11-23 the executor's first quote request after about 20 minutes idle got
+Dhan HTTP 429 twice (entry and exit), and the executor's own 2-second loop recovered
+each about three seconds later. Dhan allows one quote request per second per account;
+whether another bot collided is **not proven**.
+
+With `tamingnifty==2.4.7`, `get_depth` re-runs itself after a 429 (the same call
+again after 2 seconds, then 4 more, three attempts) and each 429 appears in the
+batched Slack timeline of that order (`BUY | Quote request got HTTP 429; asking again
+after a short pause ...`). If all three attempts fail the error is raised as before,
+the existing executor error alert fires and nothing was submitted. The entry deadline
+is still enforced after the quote returns. `get_ltp` keeps its previous retry. Every
+Dhan request now prints a millisecond timestamp line, so the Azure logs of all jobs
+can show what else was asking in the same second if a 429 recurs. Live startup
+refuses a library whose `prepare_order` cannot report these events.
+
+A Mongo-coordinated cross-bot limiter was designed, built and tested, then removed as
+disproportionate to this evidence; see the Nifty Interceptor wiki page in the vault.
 
 ## NSE startup calendar
 

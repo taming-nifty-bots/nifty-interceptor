@@ -2,6 +2,7 @@ import os
 import math
 import time
 import hashlib
+import inspect
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -18,6 +19,7 @@ from tamingnifty.safety import check_trading_day
 VERSION = "premium-renko-levels-1pct-20-gain10-low5-2026-11-05"
 SIGNAL_ID = "nifty_options_renko"
 ACTIVE_STATES = ["pending", "active", "partial", "closing"]
+ORDER_NOTIFICATION_STATE = {}
 
 
 def now_ist():
@@ -45,6 +47,26 @@ def notify(client, message):
         util.notify(message=message, slack_client=client, slack_channel="nifty-interceptor")
     except Exception as error:
         print("Slack notification failed: " + util.exception_detail(error), flush=True)
+
+
+def phase(message, report=None):
+    text = now_ist().strftime("%H:%M:%S") + " | " + message
+    if report is None:
+        print("Nifty Interceptor | " + text, flush=True)
+    else:
+        report(text)
+    return text
+
+
+def request_ltp(conn, contract, purpose, report=None):
+    phase(f"{purpose} | Requesting fresh LTP | {contract['symbol']}", report)
+    try:
+        price = valid_price(dhan.get_option_ltp(conn, contract["security_id"]))
+    except Exception as error:
+        phase(f"{purpose} | LTP failed | {util.exception_detail(error)}", report)
+        raise
+    phase(f"{purpose} | LTP received Rs{price:.2f} | {contract['symbol']}")
+    return price
 
 
 def trade_id(user, day):
@@ -131,13 +153,13 @@ def exit_reason(trade, doc, now):
     return None
 
 
-def execute_order(conn, orders, key, contract, quantity, side, now, simulated):
+def execute_order(conn, orders, key, contract, quantity, side, now, simulated, report=None):
     existing = orders.find_one({"_id": key})
     if not simulated:
-        return live_order(conn, orders, key, contract, quantity, side, now, existing)
+        return live_order(conn, orders, key, contract, quantity, side, now, existing, report)
     if existing is not None:
         return existing
-    price = valid_price(dhan.get_option_ltp(conn, contract["security_id"]))
+    price = request_ltp(conn, contract, side + " paper fill", report)
     filled_at = now_ist()
     if side == "BUY":
         deadline = now.replace(second=0, microsecond=0) + timedelta(minutes=1)
@@ -153,20 +175,39 @@ def execute_order(conn, orders, key, contract, quantity, side, now, simulated):
         orders.insert_one(order.copy())
     except DuplicateKeyError:
         order = orders.find_one({"_id": key})
+    phase(f"{side} paper fill recorded | Qty {order['filledQty']} "
+          f"@ Rs{order['averageTradedPrice']:.2f} | not a broker order", report)
     return order
 
 
-def live_order(conn, orders, key, contract, quantity, side, now, existing):
+def live_order(conn, orders, key, contract, quantity, side, now, existing, report=None):
+    history = []
     if existing is None:
         deadline = now.replace(second=0, microsecond=0) + timedelta(minutes=1)
         if side == "BUY" and not now <= now_ist() < deadline:
             raise ValueError("Order submission missed the entry minute")
         correlation = hashlib.sha256(key.encode("utf-8")).hexdigest()[:30]
-        prepared = dhan.prepare_order(
-            conn, contract["security_id"], side, quantity, "NSE_FNO", "INTRADAY",
-            entry_deadline=deadline.replace(tzinfo=ZoneInfo("Asia/Kolkata")).timestamp()
-            if side == "BUY" else None, correlation_id=correlation,
-            best_price_first=True, check_spread=False)
+        history.append(phase(f"{side} | Requesting fresh depth / preparing order | "
+                             f"{contract['symbol']} | Qty {quantity} | no order submitted yet"))
+        try:
+            prepared = dhan.prepare_order(
+                conn, contract["security_id"], side, quantity, "NSE_FNO", "INTRADAY",
+                entry_deadline=deadline.replace(tzinfo=ZoneInfo("Asia/Kolkata")).timestamp()
+                if side == "BUY" else None, correlation_id=correlation,
+                best_price_first=True, check_spread=False,
+                on_event=lambda message: history.append(phase(f"{side} | " + message)))
+        except Exception as error:
+            history.append(phase(f"{side} | Quote/preparation failed | no order submitted by this attempt | "
+                                 + util.exception_detail(error)))
+            phase(f"{side} execution update:\n" + "\n".join(history), report)
+            raise
+        quote_details = f"LIMIT Rs{prepared['request']['price']:.2f}"
+        if "initial_quote" in prepared:
+            initial = prepared["initial_quote"]
+            received = datetime.fromtimestamp(initial["received_at"], ZoneInfo("Asia/Kolkata"))
+            quote_details += (f" | best {'ask' if side == 'BUY' else 'bid'} "
+                              f"Rs{initial['reference']:.2f} | received {received.strftime('%H:%M:%S')}")
+        history.append(phase(f"{side} | Fresh depth prepared | " + quote_details))
         intent = dict(_id=key, orderStatus="SUBMITTING", transactionType=side,
                       securityId=contract["security_id"], tradingSymbol=contract["symbol"],
                       quantity=quantity, simulated=False, strategy_version=VERSION,
@@ -179,37 +220,66 @@ def live_order(conn, orders, key, contract, quantity, side, now, existing):
             if not result.acknowledged:
                 raise RuntimeError("Order intent and initial quote were not acknowledged; no order submitted")
             # Never resubmit after an ambiguous response or a crash after sending.
-            placed = dhan.submit_prepared_order(conn, prepared)
+            history.append(phase(f"{side} | Intent saved; placing LIMIT order now | Qty {quantity}"))
+            try:
+                placed = dhan.submit_prepared_order(conn, prepared)
+            except Exception as error:
+                history.append(phase(f"{side} | Submission failed or unconfirmed | saved intent will be "
+                                     f"reconciled; do not send another order | {util.exception_detail(error)}"))
+                phase(f"{side} execution update:\n" + "\n".join(history), report)
+                raise
             if not placed.get("orderId"):
                 raise ValueError(f"Order response has no ID; reconcile intent {key} with Dhan")
             orders.update_one({"_id": key}, {"$set": placed})
+            history.append(phase(f"{side} | Order submitted | ID {placed['orderId']} | "
+                                 "fill not confirmed yet"))
             existing = orders.find_one({"_id": key})
+    else:
+        history.append(phase(f"{side} | Reconciling saved order | {key} | no replacement submission"))
     if not existing or existing.get("simulated") is not False:
         raise ValueError(f"Unconfirmed order submission {key}; reconcile with Dhan before retrying")
     if not existing.get("orderId"):
         if not existing.get("correlationId"):
             raise ValueError(f"Legacy unconfirmed order {key}; reconcile with Dhan")
+        history.append(phase(f"{side} | Looking up submission by saved correlation | {key}"))
         recovered = dhan.order_by_correlation(conn, existing["correlationId"])
         orders.update_one({"_id": key}, {"$set": recovered})
         existing = orders.find_one({"_id": key})
     if "prepared" not in existing:
         raise ValueError(f"Legacy order {key} has no saved execution policy; reconcile with Dhan")
-    if existing.get("orderStatus") == "TRADED" and existing.get("fill_timestamp"):
+    confirmed_before = existing.get("orderStatus") == "TRADED" and existing.get("fill_timestamp")
+    if confirmed_before:
         order = existing
     else:
-        order = dhan.wait_for_fill(conn, existing["orderId"], slack_channel="nifty-interceptor",
-                                  prepared=existing["prepared"],
-                                  audit_collection=orders.database[
-                                      orders.name.replace("orders_", "order_quotes_", 1)],
-                                  audit_id=key)
-        if str(order.get("orderId")) != str(existing["orderId"]):
-            raise ValueError(f"Broker returned a different order for {existing['orderId']}; reconcile with Dhan")
-        if order.get("filledQty", 0) < existing.get("filledQty", 0):
-            raise ValueError(f"Order {existing['orderId']} filled quantity decreased; reconcile with Dhan")
-        if order.get("filledQty", 0) > 0:
-            order["fill_timestamp"] = str(now_ist())
-        orders.update_one({"_id": key}, {"$set": order})
-        order = orders.find_one({"_id": key})
+        history.append(phase(f"{side} | Checking fills / monitoring same order | "
+                             f"ID {existing['orderId']}"))
+        label = f"{side} | {contract.get('symbol', contract['security_id'])} | "
+        notice_state = ORDER_NOTIFICATION_STATE.setdefault(
+            str(existing["orderId"]), dict(repricings=0, warned=False))
+        try:
+            order = dhan.wait_for_fill(conn, existing["orderId"],
+                                      prepared=existing["prepared"],
+                                      audit_collection=orders.database[
+                                          orders.name.replace("orders_", "order_quotes_", 1)],
+                                      audit_id=key,
+                                      on_event=lambda message: history.append(phase(label + message)),
+                                      on_alert=lambda message: phase(label + message, report),
+                                      notification_state=notice_state)
+            if str(order.get("orderId")) != str(existing["orderId"]):
+                raise ValueError(f"Broker returned a different order for {existing['orderId']}; reconcile with Dhan")
+            if order.get("filledQty", 0) < existing.get("filledQty", 0):
+                raise ValueError(f"Order {existing['orderId']} filled quantity decreased; reconcile with Dhan")
+            if order.get("filledQty", 0) > 0:
+                order["fill_timestamp"] = str(now_ist())
+            orders.update_one({"_id": key}, {"$set": order})
+            order = orders.find_one({"_id": key})
+            if order["orderStatus"] in dhan.FINAL_ORDER_STATUSES:
+                ORDER_NOTIFICATION_STATE.pop(str(existing["orderId"]), None)
+        except Exception as error:
+            phase(f"{side} execution update:\n" + "\n".join(history + [
+                f"{side} | Fill monitoring failed | ID {existing['orderId']} may still be working; "
+                f"reconcile same order | {util.exception_detail(error)}"]), report)
+            raise
     if (str(order.get("securityId")) != str(contract["security_id"])
             or order.get("transactionType") != side or order.get("quantity") != quantity):
         raise ValueError(f"Order {order['orderId']} contract/side/quantity mismatch; reconcile with Dhan")
@@ -217,6 +287,16 @@ def live_order(conn, orders, key, contract, quantity, side, now, existing):
     if (not isinstance(filled, int) or not 0 <= filled <= quantity
             or (order.get("orderStatus") == "TRADED" and filled != quantity)):
         raise ValueError(f"Order {order['orderId']} has inconsistent fills; reconcile with Dhan")
+    if filled > 0:
+        fill_price = valid_price(order["averageTradedPrice"])
+    if not confirmed_before:
+        result = f"{side} | Broker result {order['orderStatus']} | ID {order['orderId']} | filled {filled}/{quantity}"
+        if filled > 0:
+            result += f" @ Rs{fill_price:.2f}"
+        if order["orderStatus"] == "TRADED":
+            result += " | full fill confirmed"
+        # Slack must not delay submission after pricing, or the broker fill/deadline checks.
+        phase(f"{side} execution update:\n" + "\n".join(history + [result]), report)
     if side == "BUY" and order.get("orderStatus") in dhan.FINAL_ORDER_STATUSES:
         if order.get("filledQty", 0) > 0:
             valid_price(order["averageTradedPrice"])
@@ -256,7 +336,7 @@ def claim_entry(strategies, doc, user, quantity, now, simulated=True):
     return trade
 
 
-def open_pending(conn, strategies, orders, trade, now):
+def open_pending(conn, strategies, orders, trade, now, report=None):
     key = trade["_id"] + ":BUY"
     existing = orders.find_one({"_id": key})
     decision = dict(status="entry", signal_time=trade["entry_signal"])
@@ -267,7 +347,8 @@ def open_pending(conn, strategies, orders, trade, now):
         raise ValueError("Pending entry expired; daily slot remains consumed")
     contract = dict(security_id=trade["security_id"], symbol=trade["long_option_symbol"])
     try:
-        order = execute_order(conn, orders, key, contract, trade["quantity"], "BUY", now, trade["simulated"])
+        order = execute_order(conn, orders, key, contract, trade["quantity"], "BUY", now,
+                              trade["simulated"], report=report)
     except ValueError as error:
         # Only preparation failures without a saved intent prove nothing was sent.
         if not trade["simulated"] and orders.find_one({"_id": key}) is None:
@@ -339,12 +420,13 @@ def status_message(strategies, now):
     return text
 
 
-def close_trade(conn, strategies, orders, trade, reason, now):
+def close_trade(conn, strategies, orders, trade, reason, now, report=None):
     contract = dict(security_id=trade["security_id"], symbol=trade["long_option_symbol"])
     key = trade["_id"] + ":SELL"
     strategies.update_one({"_id": trade["_id"], "strategy_state": "active"},
                           {"$set": dict(strategy_state="closing", exit_reason=reason)})
-    order = execute_order(conn, orders, key, contract, trade["quantity"], "SELL", now, trade["simulated"])
+    order = execute_order(conn, orders, key, contract, trade["quantity"], "SELL", now,
+                          trade["simulated"], report=report)
     price = valid_price(order["averageTradedPrice"])
     gross = money(trade["quantity"] * (price - trade["long_option_cost"]))
     fees = sum_charges(
@@ -364,7 +446,7 @@ def close_trade(conn, strategies, orders, trade, reason, now):
                           updates)
 
 
-def step(conn, strategies, orders, signals, user, quantity, now, simulated=True):
+def step(conn, strategies, orders, signals, user, quantity, now, simulated=True, report=None):
     active = list(strategies.find({"strategy_state": {"$in": ACTIVE_STATES}}))
     if len(active) > 1:
         raise ValueError("Multiple open/reserved swing positions; manual reconciliation required")
@@ -373,11 +455,14 @@ def step(conn, strategies, orders, signals, user, quantity, now, simulated=True)
         if trade.get("strategy_version") != VERSION or trade.get("simulated") != simulated:
             raise ValueError("Legacy or different-mode open position: reconcile before running the strategy")
         if trade["strategy_state"] == "pending":
-            open_pending(conn, strategies, orders, trade, now)
+            phase(f"Entry recovery | {trade['long_option_symbol']} | "
+                  "checking saved BUY intent before any submission", report)
+            open_pending(conn, strategies, orders, trade, now, report=report)
             return "Pending entry reconciled | " + status_message(strategies, now)
         if trade["strategy_state"] == "partial":
             raise ValueError("Partial position requires reconciliation before further orders")
         reason = trade.get("exit_reason") if trade["strategy_state"] == "closing" else None
+        doc = None
         if reason is None and (
                 now.strftime("%H:%M") >= "15:15" or trade["entry_date"] < str(now.date())):
             reason = exit_reason(trade, None, now)
@@ -386,11 +471,34 @@ def step(conn, strategies, orders, signals, user, quantity, now, simulated=True)
             doc = fresh_signal(doc, user, now)
             reason = exit_reason(trade, doc, now)
         if reason:
-            close_trade(conn, strategies, orders, trade, reason, now)
+            message = (f"Exit {'recovery' if trade['strategy_state'] == 'closing' else 'observed'}"
+                       f" | {trade['long_option_symbol']} | {reason}")
+            if "max_pnl_reached" in trade:
+                message += f" | peak gross Rs{trade['max_pnl_reached']:.2f}"
+            if doc is not None:
+                kind = trade["option_type"]
+                message += (f"\nCompleted data {doc[kind + '_data_asof']} | "
+                            f"Renko close {doc[kind + '_close']:.2f}"
+                            f" | low5 {doc[kind + '_last_5_low']} | low20 {doc[kind + '_last_20_low']}")
+            phase(message, report)
+            close_trade(conn, strategies, orders, trade, reason, now, report=report)
             return "Position closed | " + status_message(strategies, now)
-        price = valid_price(dhan.get_option_ltp(conn, trade["security_id"]))
+        contract = dict(security_id=trade["security_id"], symbol=trade["long_option_symbol"])
+        price = request_ltp(conn, contract, "P&L monitoring")
+        updates = pnl_updates(trade, price, now_ist())
         strategies.update_one({"_id": trade["_id"], "strategy_state": "active"},
-                              pnl_updates(trade, price, now_ist()))
+                              updates)
+        phase(f"P&L mark | LTP Rs{price:.2f} | gross Rs{updates['$set']['running_pnl']:.2f}"
+              f" | peak gross Rs{max(trade['max_pnl_reached'], updates['$max']['max_pnl_reached']):.2f}"
+              f" | low5 {doc[trade['option_type'] + '_last_5_low']}"
+              f" | low20 {doc[trade['option_type'] + '_last_20_low']}")
+        if (trade["max_pnl_reached"] <= trade["total_investment"] * 0.10
+                < updates["$max"]["max_pnl_reached"]):
+            phase(f"Gain >10% observed | {trade['long_option_symbol']} | LTP Rs{price:.2f}"
+                  f" | gross Rs{updates['$set']['running_pnl']:.2f}"
+                  f" | low5 {doc[trade['option_type'] + '_last_5_low']}"
+                  f" | low20 {doc[trade['option_type'] + '_last_20_low']}"
+                  " | subsequent exit checks use prior5 low; not profit booking", report)
         return None
     if now.weekday() >= 5 or now.strftime("%H:%M") < "09:31" or now.strftime("%H:%M") >= "15:15":
         return None
@@ -412,7 +520,12 @@ def step(conn, strategies, orders, signals, user, quantity, now, simulated=True)
         return "Both latest option levels exceed high20; skip today"
     trade = claim_entry(strategies, doc, user, quantity, now, simulated)
     if trade is not None:
-        open_pending(conn, strategies, orders, trade, now)
+        kind = trade["option_type"]
+        phase(f"Entry observed | {trade['long_option_symbol']} | Qty {trade['quantity']}"
+              f" | completed data {trade['entry_signal']}"
+              f" | Renko close {doc[kind + '_close']:.2f} > high20 {doc[kind + '_last_20_high']:.2f}",
+              report)
+        open_pending(conn, strategies, orders, trade, now, report=report)
         return "Entry processed | " + status_message(strategies, now)
     return None
 
@@ -420,8 +533,13 @@ def step(conn, strategies, orders, signals, user, quantity, now, simulated=True)
 def main():
     load_dotenv(find_dotenv())
     config = settings()
-    if not config["simulated"] and not hasattr(dhan, "prepare_order"):
-        raise RuntimeError("Live execution requires tamingnifty 2.4.0 depth-order API")
+    if not config["simulated"] and (
+            not hasattr(dhan, "execution_event")
+            or "on_event" not in inspect.signature(dhan.prepare_order).parameters
+            or "on_alert" not in inspect.signature(dhan.wait_for_fill).parameters
+            or "notification_state" not in inspect.signature(dhan.wait_for_fill).parameters):
+        raise RuntimeError("Live batched notifications and 429 retry events require "
+                           "tamingnifty 2.4.7; publish and rebuild first")
     quantity = os.environ.get("quantity")
     if quantity is None:
         raise ValueError("Missing quantity; configure the existing executor job explicitly")
@@ -456,7 +574,8 @@ def main():
                         {"strategy_state": {"$in": ACTIVE_STATES}}) > 0):
                     conn = dhan.login_to_dhan(slack_channel="nifty-interceptor")
                     message = step(conn, strategies, orders, signals, config["user"], quantity,
-                                   now_ist(), config["simulated"])
+                                   now_ist(), config["simulated"],
+                                   report=lambda text: notify(slack, text))
                     if message == "Waiting for today's signal":
                         if latest_state != message:
                             print(message, flush=True)
